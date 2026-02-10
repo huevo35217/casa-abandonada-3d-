@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Casa Abandonada 3D</title>
+
+<style>
+body {
+  margin: 0;
+  overflow: hidden;
+  background: black;
+  font-family: Arial, sans-serif;
+}
+#hud {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  color: white;
+  background: rgba(0,0,0,0.6);
+  padding: 10px;
+  border-radius: 6px;
+  z-index: 10;
+}
+#msg {
+  position: fixed;
+  bottom: 20px;
+  width: 100%;
+  text-align: center;
+  color: #ff5555;
+  font-size: 20px;
+}
+</style>
+
+</head>
+<body>
+
+<div id="hud">
+Vida: <span id="vida">100</span><br>
+Suministros: <span id="sup">0</span>
+</div>
+<div id="msg">Haz click para empezar</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/controls/PointerLockControls.js"></script>
+
+<script>
+let scene, camera, renderer, controls;
+let vida = 100;
+let suministros = 0;
+let enemies = [];
+let supplies = [];
+const keys = {};
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x000000, 5, 40);
+
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 100);
+
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  controls = new THREE.PointerLockControls(camera, document.body);
+  document.body.addEventListener('click', () => {
+    controls.lock();
+    document.getElementById("msg").innerText = "";
+  });
+  scene.add(controls.getObject());
+  controls.getObject().position.set(0,1.6,5);
+
+  // Luces
+  scene.add(new THREE.AmbientLight(0x222222));
+  const light = new THREE.PointLight(0xffaa88, 1, 30);
+  light.position.set(0,5,0);
+  scene.add(light);
+
+  // Suelo
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(30,30),
+    new THREE.MeshStandardMaterial({color:0x333333})
+  );
+  floor.rotation.x = -Math.PI/2;
+  scene.add(floor);
+
+  // Casa
+  const wallMat = new THREE.MeshStandardMaterial({color:0x1a1a1a});
+  createWall(0,2.5,-15,30,5,1,wallMat);
+  createWall(0,2.5,15,30,5,1,wallMat);
+  createWall(-15,2.5,0,1,5,30,wallMat);
+  createWall(15,2.5,0,1,5,30,wallMat);
+
+  // Suministros
+  for(let i=0;i<6;i++){
+    const s = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4,0.4,0.4),
+      new THREE.MeshStandardMaterial({color:0xffff00})
+    );
+    s.position.set(rand(),0.2,rand());
+    scene.add(s);
+    supplies.push(s);
+  }
+
+  // Enemigos
+  for(let i=0;i<3;i++){
+    const e = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6,1.8,0.6),
+      new THREE.MeshStandardMaterial({color:0xaa0000})
+    );
+    e.position.set(rand(),0.9,rand());
+    scene.add(e);
+    enemies.push(e);
+  }
+
+  document.addEventListener('keydown', e => keys[e.code] = true);
+  document.addEventListener('keyup', e => keys[e.code] = false);
+}
+
+function createWall(x,y,z,w,h,d,mat){
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
+  wall.position.set(x,y,z);
+  scene.add(wall);
+}
+
+function rand(){
+  return Math.random()*20-10;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const speed = 0.1;
+  if(keys["KeyW"]) controls.moveForward(speed);
+  if(keys["KeyS"]) controls.moveForward(-speed);
+  if(keys["KeyA"]) controls.moveRight(-speed);
+  if(keys["KeyD"]) controls.moveRight(speed);
+
+  const pos = controls.getObject().position;
+
+  // Recoger suministros
+  supplies.forEach((s,i)=>{
+    if(s.position.distanceTo(pos)<1){
+      scene.remove(s);
+      supplies.splice(i,1);
+      suministros++;
+      document.getElementById("sup").innerText = suministros;
+    }
+  });
+
+  // Enemigos
+  enemies.forEach(e=>{
+    const dir = pos.clone().sub(e.position).normalize().multiplyScalar(0.03);
+    e.position.add(dir);
+    if(e.position.distanceTo(pos)<1){
+      vida -= 0.2;
+      document.getElementById("vida").innerText = Math.floor(vida);
+      if(vida<=0){
+        document.getElementById("msg").innerText = "HAS MUERTO";
+      }
+    }
+  });
+
+  renderer.render(scene,camera);
+}
+</script>
+
+</body>
+</html>
