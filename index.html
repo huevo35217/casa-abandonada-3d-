@@ -2,170 +2,441 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Casa Abandonada 3D</title>
-
+<title>Haunting Ground - HTML 3D Remake</title>
 <style>
-body {
-  margin: 0;
-  overflow: hidden;
-  background: black;
-  font-family: Arial, sans-serif;
-}
-#hud {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  color: white;
-  background: rgba(0,0,0,0.6);
-  padding: 10px;
-  border-radius: 6px;
-  z-index: 10;
-}
-#msg {
-  position: fixed;
-  bottom: 20px;
-  width: 100%;
-  text-align: center;
-  color: #ff5555;
-  font-size: 20px;
-}
+  body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: absolute; top: 10px; left: 10px; color: #ffaa00; font-size: 18px; z-index: 10;
+    text-shadow: 2px 2px 4px #000;
+  }
+  #panic {
+    position: absolute; top: 10px; right: 10px; color: #ff4444; font-size: 24px; z-index: 10;
+    text-shadow: 2px 2px 4px #000;
+  }
+  #instructions {
+    position: absolute; bottom: 10px; left: 10px; color: #aaa; font-size: 14px; z-index: 10;
+  }
+  #crosshair {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ffaa00; font-size: 24px; z-index: 10; pointer-events: none;
+  }
 </style>
-
 </head>
 <body>
-
-<div id="hud">
-Vida: <span id="vida">100</span><br>
-Suministros: <span id="sup">0</span>
-</div>
-<div id="msg">Haz click para empezar</div>
+<div id="hud">Salud: 100 | Pánico: 0% | Llaves: 0/3</div>
+<div id="panic">¡CORRE!</div>
+<div id="crosshair">+</div>
+<div id="instructions">WASD: Mover | Ratón: Mirar | Click: Bloquear puntero | E: Interactuar | R: Tirar piedra (distracción)</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/controls/PointerLockControls.js"></script>
-
 <script>
+
 let scene, camera, renderer, controls;
-let vida = 100;
-let suministros = 0;
-let enemies = [];
-let supplies = [];
-const keys = {};
+let player, dog, enemies = [], keysCollected = [], doors = [], walls = [];
+let health = 100, panic = 0, keysCount = 0, gameState = 'playing'; // 'win', 'lose'
+let speed = 0.15, dogSpeed = 0.2;
+let playerDirection = new THREE.Vector3();
+let velocity = new THREE.Vector3(), onGround = true;
+let lastInteract = 0, stones = [], lastThrow = 0;
+let panicShake = 0, audioContext;
+
+// Niveles: habitaciones del castillo
+const rooms = [
+  { pos: [0,0,0], size: [10,3,10], color: 0x444444, unlocked: true }, // Habitación inicio
+  { pos: [-15,0,0], size: [8,3,12], color: 0x333333, unlocked: false },
+  { pos: [15,0,0], size: [12,3,8], color: 0x333333, unlocked: false },
+  { pos: [0,0,20], size: [20,3,10], color: 0x222222, unlocked: false } // Salida
+];
 
 init();
 animate();
 
 function init() {
+  // Escena con niebla densa para horror
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x000000, 5, 40);
+  scene.fog = new THREE.Fog(0x111111, 3, 40);
 
-  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 100);
+  // Cámara
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 2.5, 5);
 
-  renderer = new THREE.WebGLRenderer({antialias:true});
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
 
+  // Controles PointerLock para inmersión FPS-like, pero con tercera persona simulada
   controls = new THREE.PointerLockControls(camera, document.body);
-  document.body.addEventListener('click', () => {
-    controls.lock();
-    document.getElementById("msg").innerText = "";
-  });
   scene.add(controls.getObject());
-  controls.getObject().position.set(0,1.6,5);
+  document.body.addEventListener('click', () => controls.lock());
+  controls.addEventListener('lock', () => document.getElementById('instructions').style.opacity = 0.3);
+  controls.addEventListener('unlock', () => document.getElementById('instructions').style.opacity = 1);
 
-  // Luces
-  scene.add(new THREE.AmbientLight(0x222222));
-  const light = new THREE.PointLight(0xffaa88, 1, 30);
-  light.position.set(0,5,0);
-  scene.add(light);
+  // Luces tenues, como castillo oscuro
+  const ambient = new THREE.AmbientLight(0x202020, 0.3);
+  scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0x404040, 0.5);
+  dirLight.position.set(10, 20, 5);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 2048;
+  scene.add(dirLight);
 
-  // Suelo
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(30,30),
-    new THREE.MeshStandardMaterial({color:0x333333})
-  );
-  floor.rotation.x = -Math.PI/2;
+  // Suelo principal
+  const floorGeo = new THREE.PlaneGeometry(60, 60);
+  const floorMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
   scene.add(floor);
 
-  // Casa
-  const wallMat = new THREE.MeshStandardMaterial({color:0x1a1a1a});
-  createWall(0,2.5,-15,30,5,1,wallMat);
-  createWall(0,2.5,15,30,5,1,wallMat);
-  createWall(-15,2.5,0,1,5,30,wallMat);
-  createWall(15,2.5,0,1,5,30,wallMat);
+  // Construir habitaciones (muros y techos)
+  buildCastle();
 
-  // Suministros
-  for(let i=0;i<6;i++){
-    const s = new THREE.Mesh(
-      new THREE.BoxGeometry(0.4,0.4,0.4),
-      new THREE.MeshStandardMaterial({color:0xffff00})
-    );
-    s.position.set(rand(),0.2,rand());
-    scene.add(s);
-    supplies.push(s);
+  // Jugadora (Fiona-like: figura femenina simple)
+  const playerGroup = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.2), new THREE.MeshLambertMaterial({ color: 0xffddcc }));
+  body.position.y = 0.8;
+  body.castShadow = true;
+  playerGroup.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25), new THREE.MeshLambertMaterial({ color: 0xffccaa }));
+  head.position.y = 1.8;
+  playerGroup.add(head);
+  player = playerGroup;
+  player.position.set(0, 1, 0);
+  scene.add(player);
+
+  // Perro Hewie (compañero)
+  const dogGroup = new THREE.Group();
+  const dogBody = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 8), new THREE.MeshLambertMaterial({ color: 0x8b4513 }));
+  dogBody.rotation.z = Math.PI / 2;
+  dogBody.position.y = 0.4;
+  dogGroup.add(dogBody);
+  const dogHead = new THREE.Mesh(new THREE.SphereGeometry(0.18), new THREE.MeshLambertMaterial({ color: 0xa0522d }));
+  dogHead.position.set(0.4, 0.5, 0);
+  dogGroup.add(dogHead);
+  dog = dogGroup;
+  dog.position.set(1, 1, 1);
+  scene.add(dog);
+
+  // Llaves coleccionables (amarillas, en habitaciones)
+  for (let i = 0; i < 3; i++) {
+    const keyGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.4);
+    const keyMat = new THREE.MeshLambertMaterial({ color: 0xffff00, emissive: 0x444400 });
+    const key = new THREE.Mesh(keyGeo, keyMat);
+    key.position.set(rooms[i+1].pos[0] + (Math.random()-0.5)*rooms[i+1].size[0], 0.3, rooms[i+1].pos[2] + (Math.random()-0.5)*rooms[i+1].size[2]);
+    key.rotation.x = Math.PI / 2;
+    scene.add(key);
+    keysCollected.push(key);
   }
 
-  // Enemigos
-  for(let i=0;i<3;i++){
-    const e = new THREE.Mesh(
-      new THREE.BoxGeometry(0.6,1.8,0.6),
-      new THREE.MeshStandardMaterial({color:0xaa0000})
-    );
-    e.position.set(rand(),0.9,rand());
-    scene.add(e);
-    enemies.push(e);
+  // Enemigos stalkers (rojos, como Debilitas)
+  for (let i = 0; i < 3; i++) {
+    const enemyGroup = new THREE.Group();
+    const eneBody = new THREE.Mesh(new THREE.BoxGeometry(0.6, 2, 0.4), new THREE.MeshLambertMaterial({ color: 0xcc0000 }));
+    eneBody.position.y = 1;
+    eneBody.castShadow = true;
+    enemyGroup.add(eneBody);
+    const eneHead = new THREE.Mesh(new THREE.SphereGeometry(0.3), new THREE.MeshLambertMaterial({ color: 0x880000 }));
+    eneHead.position.y = 2.1;
+    enemyGroup.add(eneHead);
+    const ene = enemyGroup;
+    ene.position.set(rooms[Math.floor(Math.random()*rooms.length)].pos[0] + (Math.random()-0.5)*10, 1, rooms[Math.floor(Math.random()*rooms.length)].pos[2] + (Math.random()-0.5)*10);
+    ene.userData = { patrolPoints: generatePatrol(ene.position), currentPatrol: 0, state: 'patrol', sightRange: 8, attackRange: 1.5, speed: 0.08 };
+    scene.add(ene);
+    enemies.push(ene);
   }
 
-  document.addEventListener('keydown', e => keys[e.code] = true);
-  document.addEventListener('keyup', e => keys[e.code] = false);
+  // Piedras para distraer (5 disponibles)
+  for (let i = 0; i < 5; i++) {
+    const stoneGeo = new THREE.SphereGeometry(0.1);
+    const stoneMat = new THREE.MeshLambertMaterial({ color: 0x666666 });
+    const stone = new THREE.Mesh(stoneGeo, stoneMat);
+    stone.position.set((Math.random()-0.5)*40, 0.1, (Math.random()-0.5)*40);
+    scene.add(stone);
+    stones.push(stone);
+  }
+
+  // Eventos
+  document.addEventListener('keydown', onKeyDown);
+  window.addEventListener('resize', onWindowResize);
+
+  // Audio contextual (Web Audio API para pasos, gruñidos)
+  try {
+    audioContext = new AudioContext();
+  } catch(e) {}
 }
 
-function createWall(x,y,z,w,h,d,mat){
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
-  wall.position.set(x,y,z);
-  scene.add(wall);
+function buildCastle() {
+  rooms.forEach((room, idx) => {
+    // Paredes
+    const wallMat = new THREE.MeshLambertMaterial({ color: room.color });
+    // Norte
+    let wall = new THREE.Mesh(new THREE.BoxGeometry(room.size[0], room.size[1], 0.3), wallMat);
+    wall.position.set(room.pos[0], room.size[1]/2, room.pos[2] + room.size[2]/2);
+    wall.castShadow = true;
+    wall.receiveShadow = true;
+    walls.push(wall);
+    scene.add(wall);
+    // Sur
+    wall = wall.clone();
+    wall.position.z = room.pos[2] - room.size[2]/2;
+    walls.push(wall);
+    scene.add(wall);
+    // Este
+    wall = new THREE.Mesh(new THREE.BoxGeometry(0.3, room.size[1], room.size[2]), wallMat);
+    wall.position.set(room.pos[0] + room.size[0]/2, room.size[1]/2, room.pos[2]);
+    walls.push(wall);
+    scene.add(wall);
+    // Oeste
+    wall.position.x = room.pos[0] - room.size[0]/2;
+    walls.push(wall);
+    scene.add(wall);
+
+    // Techo
+    const ceiling = new THREE.Mesh(new THREE.BoxGeometry(room.size[0], 0.2, room.size[2]), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+    ceiling.position.set(room.pos[0], room.size[1] + 0.1, room.pos[2]);
+    scene.add(ceiling);
+
+    // Puerta (solo si no es la primera)
+    if (idx > 0) {
+      const doorGeo = new THREE.BoxGeometry(1.2, 2.5, 0.2);
+      const doorMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+      const door = new THREE.Mesh(doorGeo, doorMat);
+      door.position.set(room.pos[0] - room.size[0]/2 - 0.1, 1.35, room.pos[2]);
+      door.userData = { open: false, targetRoom: idx, requiredKeys: idx };
+      doors.push(door);
+      scene.add(door);
+    }
+  });
 }
 
-function rand(){
-  return Math.random()*20-10;
+function generatePatrol(startPos) {
+  return [
+    startPos.clone(),
+    new THREE.Vector3(startPos.x + (Math.random()-0.5)*10, startPos.y, startPos.z + (Math.random()-0.5)*10),
+    new THREE.Vector3(startPos.x - (Math.random()-0.5)*10, startPos.y, startPos.z - (Math.random()-0.5)*10)
+  ];
 }
 
-function animate(){
-  requestAnimationFrame(animate);
+const keys = {};
+function onKeyDown(e) {
+  keys[e.code] = true;
+  if (e.code === 'KeyE' && Date.now() - lastInteract > 500) {
+    interact();
+    lastInteract = Date.now();
+  }
+  if (e.code === 'KeyR' && Date.now() - lastThrow > 1000 && stones.length > 0) {
+    throwStone();
+    lastThrow = Date.now();
+  }
+}
+document.addEventListener('keyup', e => keys[e.code] = false);
 
-  const speed = 0.1;
-  if(keys["KeyW"]) controls.moveForward(speed);
-  if(keys["KeyS"]) controls.moveForward(-speed);
-  if(keys["KeyA"]) controls.moveRight(-speed);
-  if(keys["KeyD"]) controls.moveRight(speed);
+function interact() {
+  // Puertas
+  for (let door of doors) {
+    if (door.position.distanceTo(player.position) < 2 && keysCount >= door.userData.requiredKeys) {
+      door.userData.open = true;
+      door.position.x -= 2; // Abrir deslizando
+      rooms[door.userData.targetRoom].unlocked = true;
+      return;
+    }
+  }
+}
 
-  const pos = controls.getObject().position;
+function throwStone() {
+  const stone = stones.pop();
+  if (!stone) return;
+  stone.userData.thrown = true;
+  stone.userData.velocity = playerDirection.clone().multiplyScalar(0.5).add(new THREE.Vector3(0, 0.3, 0));
+  // Distracción: enemigos van hacia la piedra
+}
 
-  // Recoger suministros
-  supplies.forEach((s,i)=>{
-    if(s.position.distanceTo(pos)<1){
-      scene.remove(s);
-      supplies.splice(i,1);
-      suministros++;
-      document.getElementById("sup").innerText = suministros;
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function updatePlayer(delta) {
+  const direction = new THREE.Vector3();
+  if (keys['KeyW']) direction.z -= 1;
+  if (keys['KeyS']) direction.z += 1;
+  if (keys['KeyA']) direction.x -= 1;
+  if (keys['KeyD']) direction.x += 1;
+  direction.normalize();
+
+  // Rotación con mouse via controls
+  playerDirection.copy(direction.applyQuaternion(camera.quaternion));
+  player.position.add(playerDirection.multiplyScalar(speed));
+
+  // Gravedad simple
+  velocity.y -= 9.8 * delta * 10;
+  player.position.y += velocity.y * delta;
+  if (player.position.y < 1) {
+    player.position.y = 1;
+    velocity.y = 0;
+  }
+
+  // Cámara tercera persona
+  const idealOffset = new THREE.Vector3(0, 2.5, 5).applyQuaternion(camera.quaternion);
+  camera.position.lerp(player.position.clone().add(idealOffset), 0.1);
+  camera.lookAt(player.position);
+}
+
+function updateDog(delta) {
+  const dirToPlayer = player.position.clone().sub(dog.position).normalize();
+  dog.position.add(dirToPlayer.multiplyScalar(dogSpeed));
+  dog.lookAt(player.position);
+}
+
+function updateEnemies(delta) {
+  enemies.forEach(ene => {
+    const distToPlayer = ene.position.distanceTo(player.position);
+    const dirToPlayer = player.position.clone().sub(ene.position).normalize();
+
+    if (distToPlayer < ene.userData.sightRange) {
+      ene.userData.state = 'chase';
+    } else if (Math.random() < 0.01) {
+      ene.userData.state = 'patrol';
+    }
+
+    if (ene.userData.state === 'chase') {
+      ene.position.add(dirToPlayer.multiplyScalar(ene.userData.speed * (1 + panic/100)));
+      ene.lookAt(player.position);
+    } else {
+      // Patrulla
+      const target = ene.userData.patrolPoints[ene.userData.currentPatrol];
+      const dirPatrol = target.clone().sub(ene.position).normalize();
+      ene.position.add(dirPatrol.multiplyScalar(ene.userData.speed));
+      ene.lookAt(target);
+      if (ene.position.distanceTo(target) < 0.5) {
+        ene.userData.currentPatrol = (ene.userData.currentPatrol + 1) % ene.userData.patrolPoints.length;
+      }
+    }
+
+    // Colisión con piedras
+    stones.forEach(stone => {
+      if (stone.userData.thrown && stone.position.distanceTo(ene.position) < 2) {
+        ene.userData.state = 'patrol';
+      }
+    });
+
+    // Ataque
+    if (distToPlayer < ene.userData.attackRange) {
+      health -= 20 * delta;
+      panic = Math.min(100, panic + 30 * delta);
+    }
+
+    // Perro ataca
+    if (dog.position.distanceTo(ene.position) < 1.5) {
+      ene.position.add(dirToPlayer.multiplyScalar(-0.15)); // Empuja enemigo
+      health += 5 * delta; // Regenera un poco
+    }
+  });
+}
+
+function updateCollectibles() {
+  // Llaves
+  keysCollected.forEach((key, i) => {
+    if (key.position.distanceTo(player.position) < 1.5) {
+      scene.remove(key);
+      keysCollected.splice(i, 1);
+      keysCount++;
+      if (keysCount >= 3) gameState = 'win';
     }
   });
 
-  // Enemigos
-  enemies.forEach(e=>{
-    const dir = pos.clone().sub(e.position).normalize().multiplyScalar(0.03);
-    e.position.add(dir);
-    if(e.position.distanceTo(pos)<1){
-      vida -= 0.2;
-      document.getElementById("vida").innerText = Math.floor(vida);
-      if(vida<=0){
-        document.getElementById("msg").innerText = "HAS MUERTO";
+  // Piedras (solo visibles si cerca)
+  stones.forEach(stone => {
+    if (!stone.userData.thrown && stone.position.distanceTo(player.position) < 3) {
+      stone.visible = true;
+    } else if (!stone.userData.thrown) {
+      stone.visible = false;
+    }
+  });
+
+  // Actualizar piedras lanzadas
+  stones.forEach(stone => {
+    if (stone.userData.thrown) {
+      stone.position.add(stone.userData.velocity);
+      stone.userData.velocity.multiplyScalar(0.98);
+      stone.userData.velocity.y -= 0.01;
+      if (stone.position.y < 0.1) {
+        stone.position.y = 0.1;
+        stone.userData.thrown = false;
+        stone.visible = false;
       }
     }
   });
-
-  renderer.render(scene,camera);
 }
-</script>
 
+function updatePanic(delta) {
+  // Pánico sube cerca de enemigos
+  let nearestEnemy = 100;
+  enemies.forEach(ene => {
+    nearestEnemy = Math.min(nearestEnemy, ene.position.distanceTo(player.position));
+  });
+  if (nearestEnemy < 10) {
+    panic = Math.min(100, panic + (10 - nearestEnemy) * delta);
+  } else {
+    panic = Math.max(0, panic - delta * 10);
+  }
+
+  // Efectos de pánico
+  speed = 0.15 * (1 - panic / 200);
+  panicShake = panic / 50;
+  document.getElementById('panic').style.opacity = panic / 100;
+  document.getElementById('panic').textContent = panic > 70 ? '¡CORRE!' : '';
+
+  // Shake cámara
+  camera.position.x += (Math.random() - 0.5) * panicShake * 0.1;
+  camera.position.y += (Math.random() - 0.5) * panicShake * 0.1;
+}
+
+function checkGameOver() {
+  if (health <= 0) {
+    gameState = 'lose';
+    alert('¡Has sido capturada! Recarga para intentarlo de nuevo.');
+  } else if (gameState === 'win') {
+    alert('¡Has escapado del castillo! ¡Victoria!');
+  }
+  if (gameState !== 'playing') {
+    renderer.domElement.style.opacity = 0.5;
+  }
+}
+
+let prevTime = performance.now();
+function animate() {
+  requestAnimationFrame(animate);
+  const time = performance.now();
+  const delta = (time - prevTime) / 1000;
+  prevTime = time;
+
+  if (gameState === 'playing') {
+    updatePlayer(delta);
+    updateDog(delta);
+    updateEnemies(delta);
+    updateCollectibles();
+    updatePanic(delta);
+  }
+
+  // Colisiones básicas con paredes
+  player.position.clamp(new THREE.Vector3(-25,1,-25), new THREE.Vector3(25,10,25));
+  dog.position.clamp(new THREE.Vector3(-25,1,-25), new THREE.Vector3(25,10,25));
+
+  // HUD
+  document.getElementById('hud').innerText = Salud: ${Math.floor(health)} | Pánico: ${Math.floor(panic)}% | Llaves: ${keysCount}/3;
+
+  checkGameOver();
+
+  // Render
+  renderer.render(scene, camera);
+}
+
+</script>
 </body>
 </html>
